@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: tpl-omie-sync
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    envVars:
+      - key: TOKEN_SYNC
+        sync: false
+      - key: TPL_BASE_URL
+        value: https://oms.tpl.com.br/api
+      - key: TPL_APIKEY
+        sync: false
+      - key: TPL_TOKEN
+        sync: false
+      - key: TPL_EMAIL
+        sync: false
+      - key: OMIE_PRODUTO_URL
+        value: https://app.omie.com.br/api/v1/geral/produtos/
+      - key: OMIE_ESTOQUE_URL
+        value: https://app.omie.com.br/api/v1/estoque/ajuste/
+      - key: APP_KEY_OMIE
+        sync: false
+      - key: APP_SECRET
+        sync: false
