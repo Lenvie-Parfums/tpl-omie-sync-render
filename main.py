@@ -61,7 +61,7 @@ def health():
 @app.post("/sincronizar")
 async def sincronizar(
     background_tasks: BackgroundTasks,
-    authorization: str = Header(default="")
+    authorization: str = Header(default="", alias="Authorization")
 ):
     global _executando
 
