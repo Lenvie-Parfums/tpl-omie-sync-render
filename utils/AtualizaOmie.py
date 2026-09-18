@@ -69,6 +69,9 @@ def _post_omie(url, payload, sku, max_retries=3, retry_delay=10):
                 time.sleep(60)
                 tentativa += 1
                 continue
+            if "local de estoque" in texto.lower() and "inativo" in texto.lower():
+                log.error(f"[{sku}] Local de estoque inativo. Nao sera feito retry: {texto[:200]}")
+                return response
             log.warning(f"[{sku}] Erro {response.status_code}: {texto[:200]}")
             time.sleep(retry_delay)
             tentativa += 1
@@ -289,58 +292,82 @@ def atualizar_estoque_omie_com_bloqueado(codigo_produto, quan_disponivel,
     return ok_padrao and ok_avarias
 
 
-def atualizar_estoque_kit(codigo_produto, quan_estoca, sku,
+def atualizar_estoque_kit(codigo_produto, quan_disponivel, quan_bloqueado, sku,
                            max_retries=3, retry_delay=10):
     """
-    Atualiza Kit no Omie.
-    Tenta SLD primeiro. Se rejeitado (tipo inválido para kit), usa ENT/SAI.
-    Evita ListarPosEstoque que está causando bloqueio.
-    """
-    log.info(f"[{sku}] Kit: tentando SLD com valor {quan_estoca}")
+    Atualiza KIT mantendo a TPL como fonte da verdade:
+    - available (saldo) -> PADRAO via SLD, sem codigo_local_estoque.
+      Assim o Omie usa o local PADRAO ativo da conta, igual aos produtos normais.
+    - blocked (avaria) -> AVARIAS via SLD no local 0002_AVARIA.
 
-    payload_sld = {
+    Nao usa mais COD_LOCAL_PADRAO fixo nos kits, pois esse codigo pode estar inativo.
+    """
+    # 1. Saldo normal da TPL -> PADRAO
+    log.info(f"[{sku}] KIT PADRAO: gravando saldo {quan_disponivel} via SLD")
+    payload_padrao = {
         "call": "IncluirAjusteEstoque",
         "app_key": APP_KEY, "app_secret": APP_SECRET,
         "param": [{
             "id_prod": codigo_produto,
             "data": data_hoje_sp(),
-            "quan": str(quan_estoca),
-            "obs": "Ajuste automatico por API",
+            "quan": str(int(float(quan_disponivel))),
+            "obs": "Ajuste automatico por API - KIT",
+            "origem": "AJU",
+            "tipo": "SLD",
+            "motivo": "INV",
+            "valor": 0.01
+            # Sem codigo_local_estoque: usa o PADRAO ativo do Omie.
+        }]
+    }
+    response = _post_omie(
+        OMIE_ESTOQUE_URL, payload_padrao, sku, max_retries, retry_delay
+    )
+    ok_padrao = bool(
+        response and response.status_code == 200 and "faultstring" not in response.text
+    )
+    if ok_padrao:
+        log.info(f"[{sku}] KIT PADRAO atualizado! alvo={quan_disponivel}")
+    else:
+        log.error(
+            f"[{sku}] KIT PADRAO falhou: "
+            f"{response.text[:200] if response else 'sem resposta'}"
+        )
+
+    # 2. Avaria/bloqueado da TPL -> AVARIAS
+    cod_avarias = obter_codigo_local("AVARIAS")
+    if not cod_avarias:
+        log.error(f"[{sku}] KIT AVARIAS: codigo do local AVARIAS nao encontrado.")
+        return False
+
+    log.info(f"[{sku}] KIT AVARIAS: gravando saldo {quan_bloqueado} via SLD")
+    payload_avarias = {
+        "call": "IncluirAjusteEstoque",
+        "app_key": APP_KEY, "app_secret": APP_SECRET,
+        "param": [{
+            "id_prod": codigo_produto,
+            "data": data_hoje_sp(),
+            "quan": str(int(float(quan_bloqueado))),
+            "obs": "Ajuste automatico por API - KIT",
             "origem": "AJU",
             "tipo": "SLD",
             "motivo": "INV",
             "valor": 0.01,
-            "codigo_local_estoque": COD_LOCAL_PADRAO
+            "codigo_local_estoque": cod_avarias
         }]
     }
-    response = _post_omie(OMIE_ESTOQUE_URL, payload_sld, sku, max_retries=1, retry_delay=retry_delay)
+    response2 = _post_omie(
+        OMIE_ESTOQUE_URL, payload_avarias, sku, max_retries, retry_delay
+    )
+    ok_avarias = bool(
+        response2 and response2.status_code == 200 and "faultstring" not in response2.text
+    )
+    if ok_avarias:
+        log.info(f"[{sku}] KIT AVARIAS atualizada! alvo={quan_bloqueado}")
+    else:
+        log.error(
+            f"[{sku}] KIT AVARIAS falhou: "
+            f"{response2.text[:200] if response2 else 'sem resposta'}"
+        )
 
-    if response and response.status_code == 200 and "faultstring" not in response.text:
-        log.info(f"[{sku}] Kit atualizado via SLD! quantidade={quan_estoca}")
-        return True
-
-    # SLD rejeitado — usa ENT com o valor alvo
-    # (sem consulta de saldo pra evitar bloqueio da API)
-    log.info(f"[{sku}] SLD falhou — usando ENT com alvo={quan_estoca}")
-    payload_ent = {
-        "call": "IncluirAjusteEstoque",
-        "app_key": APP_KEY, "app_secret": APP_SECRET,
-        "param": [{
-            "id_prod": codigo_produto,
-            "data": data_hoje_sp(),
-            "quan": str(int(float(quan_estoca))),
-            "obs": "Ajuste automatico por API",
-            "origem": "AJU",
-            "tipo": "ENT",
-            "motivo": "INV",
-            "valor": 0.01,
-            "codigo_local_estoque": COD_LOCAL_PADRAO
-        }]
-    }
-    response2 = _post_omie(OMIE_ESTOQUE_URL, payload_ent, sku, max_retries, retry_delay)
-    if response2 and response2.status_code == 200 and "faultstring" not in response2.text:
-        log.info(f"[{sku}] Kit atualizado via ENT! alvo={quan_estoca}")
-        return True
-    log.error(f"[{sku}] Falha kit: {response2.text[:200] if response2 else 'sem resposta'}")
-    return False
+    return ok_padrao and ok_avarias
 
