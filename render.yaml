@@ -4,6 +4,7 @@ services:
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /health
     envVars:
       - key: TOKEN_SYNC
         sync: false
@@ -22,4 +23,27 @@ services:
       - key: APP_KEY_OMIE
         sync: false
       - key: APP_SECRET
+        sync: false
+      - key: DELAY_ENTRE_SKUS
+        value: "1"
+      - key: QTD_SKUS_LENTOS
+        value: "10"
+
+  - type: cron
+    name: tpl-omie-sync-cron
+    runtime: python
+    buildCommand: pip install requests
+    schedule: "*/15 * * * *"
+    startCommand: >-
+      python -c "import os,requests;
+      u=os.environ['SYNC_URL'].rstrip('/')+'/sincronizar';
+      r=requests.post(u,
+      headers={'Authorization':'Bearer '+os.environ['TOKEN_SYNC'],
+      'X-Sync-Source':'render-cron'},timeout=120);
+      print(r.status_code,r.text);
+      r.raise_for_status()"
+    envVars:
+      - key: SYNC_URL
+        sync: false
+      - key: TOKEN_SYNC
         sync: false
