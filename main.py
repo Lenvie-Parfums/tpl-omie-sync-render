@@ -216,7 +216,7 @@ async def _executar_sync():
 
                     if sku in SKUS_KITS:
                         sucesso = atualizar_estoque_kit(
-                            codigo_produto, available, sku
+                            codigo_produto, available, bloqueado, sku
                         )
                     else:
                         sucesso = atualizar_estoque_omie_com_bloqueado(
