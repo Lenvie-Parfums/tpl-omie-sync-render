@@ -135,6 +135,9 @@ async def _executar_sync():
     log.info(f"INÍCIO SYNC TPL→OMIE | {inicio.strftime('%d/%m/%Y %H:%M:%S')}")
     log.info("=" * 70)
 
+    from utils.RelatorioFalhas import RelatorioFalhas
+    rel = RelatorioFalhas(origem="tpl-omie-sync-render")
+
     try:
         from utils.ConsultaTPL import rodarAPITPL
         from utils.AtualizaOmie import (
@@ -148,13 +151,24 @@ async def _executar_sync():
         locais = carregar_locais_estoque()
         log.info(f"Locais de estoque: {locais}")
 
+        # Saldo TPL da execução anterior (aba Estoque_Sync) — detecta SKU que zerou entre syncs
+        saldos_anteriores = RelatorioFalhas.carregar_saldos_anteriores()
+
         # --------------------------------------------------------
         # Mede separadamente o tempo gasto para buscar a TPL
         # --------------------------------------------------------
         _progresso_atual["fase"] = "consultando_tpl"
         tpl_inicio = time.perf_counter()
-        skus = rodarAPITPL()
+        try:
+            skus = rodarAPITPL()
+        except Exception as erro_tpl:
+            rel.registrar("ERRO_TPL", "-", detalhe=str(erro_tpl))
+            raise
         tempo_tpl = time.perf_counter() - tpl_inicio
+
+        if not skus:
+            # TPL não devolveu nada: não sobrescreve o snapshot (o alerta acusa sync parado)
+            rel.registrar("ERRO_TPL", "-", detalhe="TPL retornou lista vazia de SKUs")
 
         total = len(skus)
         _progresso_atual.update({
@@ -179,6 +193,18 @@ async def _executar_sync():
             sku = str(produto.get("sku", "")).strip()
             available = produto.get("available", 0)
             bloqueado = produto.get("blocked", 0)
+
+            # ---- Relatório: foto do saldo + SKU que zerou desde o último sync
+            try:
+                saldo_num = float(available or 0)
+            except (TypeError, ValueError):
+                saldo_num = 0.0
+            anterior = saldos_anteriores.get(sku)
+            rel.registrar_saldo(sku, saldo_num, saldo_omie_antes=anterior)
+            if saldo_num <= 0 and anterior is not None and anterior > 0:
+                rel.registrar("ZEROU_NA_RODADA", sku, saldo_tpl=saldo_num,
+                              saldo_omie_antes=anterior,
+                              detalhe="saldo_omie_antes = saldo TPL no sync anterior")
 
             sku_inicio = time.perf_counter()
             horario_sku = datetime.now(TZ_SP).strftime("%H:%M:%S")
@@ -206,6 +232,8 @@ async def _executar_sync():
                     nao_encontrados += 1
                     status = "nao_encontrado"
                     nao_encontrados_lista.append(sku)
+                    rel.registrar("SEM_DEPARA", sku, saldo_tpl=saldo_num,
+                                  detalhe="SKU do TPL não encontrado no Omie")
                     log.warning(
                         f"[{indice}/{total}] SKU={sku} NÃO ENCONTRADO NO OMIE | "
                         f"consulta={tempo_consulta:.2f}s"
@@ -228,6 +256,7 @@ async def _executar_sync():
                     if sucesso:
                         ok += 1
                         status = "ok"
+                        rel.ok()
                     else:
                         falhas += 1
                         status = "falha"
@@ -236,6 +265,8 @@ async def _executar_sync():
                             "etapa": etapa,
                             "motivo": "função de atualização retornou False",
                         })
+                        rel.registrar("ERRO_OMIE", sku, saldo_tpl=saldo_num,
+                                      detalhe="ajuste de estoque recusado pelo Omie (ver log do Render)")
 
                     log.info(
                         f"[{indice}/{total}] SKU={sku} | status={status.upper()} | "
@@ -251,6 +282,8 @@ async def _executar_sync():
                     "etapa": etapa,
                     "motivo": str(erro_sku)[:300],
                 })
+                rel.registrar("ERRO_OMIE", sku, saldo_tpl=saldo_num,
+                              detalhe=f"{etapa}: {erro_sku}")
                 log.error(
                     f"[{indice}/{total}] SKU={sku} | ERRO na etapa {etapa}: {erro_sku}",
                     exc_info=True,
@@ -359,6 +392,21 @@ async def _executar_sync():
         _progresso_atual["fase"] = "erro"
 
     finally:
+        # Exporta relatório (Falhas_Sync + Estoque_Sync). Nunca derruba o sync.
+        try:
+            _progresso_atual["fase_relatorio"] = "exportando"
+            exp = rel.exportar()
+            _ultimo_resultado["relatorio"] = {
+                "ocorrencias": exp["ocorrencias"],
+                "por_tipo": exp["por_tipo"],
+                "exportacao": exp["exportacao"],
+            }
+            log.info(f"Relatório exportado: {_ultimo_resultado['relatorio']}")
+        except Exception as erro_rel:
+            log.warning(f"Falha ao exportar relatório: {erro_rel}")
+        finally:
+            _progresso_atual.pop("fase_relatorio", None)
+
         _executando = False
         _inicio_sync_atual = None
 

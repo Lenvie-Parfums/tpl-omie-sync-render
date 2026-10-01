@@ -23,3 +23,8 @@ services:
         sync: false
       - key: APP_SECRET
         sync: false
+      # --- Relatório de falhas / snapshot de estoque (aba Falhas_Sync e Estoque_Sync) ---
+      - key: GOOGLE_SA_JSON
+        sync: false
+      - key: SHEET_FALHAS_ID
+        value: 1F2f8u9B7zK78bt_8-pRVfAjD4uaHJ3y_JrMjsKCxAoo
