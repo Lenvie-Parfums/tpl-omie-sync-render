@@ -32,6 +32,9 @@ DELAY_ENTRE_SKUS = float(os.getenv("DELAY_ENTRE_SKUS", "1"))
 # Quantos SKUs lentos ficam disponíveis no /health.
 QTD_SKUS_LENTOS = int(os.getenv("QTD_SKUS_LENTOS", "10"))
 
+# Se um sync passar disso, a trava é considerada presa e um novo pode começar.
+LIMITE_TRAVA_MIN = int(os.getenv("LIMITE_TRAVA_MIN", "75"))
+
 # Estado em memória — evita execuções simultâneas
 _executando = False
 _inicio_sync_atual = None
@@ -93,6 +96,16 @@ async def sincronizar(
     if TOKEN_SYNC and token != TOKEN_SYNC:
         raise HTTPException(status_code=401, detail="Token inválido")
 
+    # Trava presa (sync travado/morto): libera depois de LIMITE_TRAVA_MIN
+    if _executando and _inicio_sync_atual is not None:
+        minutos = (datetime.now(TZ_SP) - _inicio_sync_atual).total_seconds() / 60
+        if minutos > LIMITE_TRAVA_MIN:
+            log.warning(
+                "Sync marcado como em andamento há %.0f min (> %s). Liberando trava.",
+                minutos, LIMITE_TRAVA_MIN,
+            )
+            _executando = False
+
     if _executando:
         log.info(
             "Sync já em andamento. Ignorando requisição. origem=%s",
@@ -116,7 +129,9 @@ async def sincronizar(
     })
 
 
-async def _executar_sync():
+def _executar_sync():
+    # Função síncrona de propósito: o FastAPI roda em thread separada e o
+    # servidor continua respondendo /health e /sincronizar durante o sync.
     global _executando, _inicio_sync_atual, _progresso_atual
     global _ultimo_sync, _ultimo_resultado
 

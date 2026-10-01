@@ -45,6 +45,20 @@ COLUNAS = [
 
 ABA_PLANILHA = "Falhas_Sync"
 
+# Timeout das chamadas ao Google Sheets: sem isso uma chamada pendurada trava o sync
+TIMEOUT_SHEETS_SEG = int(os.getenv("TIMEOUT_SHEETS_SEG", "60"))
+
+
+def _cliente_sheets(sa_json: str):
+    import gspread
+
+    gc = gspread.service_account_from_dict(json.loads(sa_json))
+    try:
+        gc.set_timeout(TIMEOUT_SHEETS_SEG)
+    except Exception:  # noqa: BLE001
+        pass
+    return gc
+
 # Foto do estoque a cada execução — lida pelo alerta do Slack (Apps Script)
 ABA_SNAPSHOT = "Estoque_Sync"
 COLUNAS_SNAPSHOT = [
@@ -105,7 +119,7 @@ class RelatorioFalhas:
         try:
             import gspread
 
-            gc = gspread.service_account_from_dict(json.loads(sa_json))
+            gc = _cliente_sheets(sa_json)
             aba = gc.open_by_key(sheet_id).worksheet(ABA_SNAPSHOT)
             anteriores = {}
             for linha in aba.get_all_records(numericise_ignore=["all"]):
@@ -193,7 +207,7 @@ class RelatorioFalhas:
             return
         import gspread  # só importa se for usar
 
-        gc = gspread.service_account_from_dict(json.loads(sa_json))
+        gc = _cliente_sheets(sa_json)
         planilha = gc.open_by_key(sheet_id)
         try:
             aba = planilha.worksheet(ABA_PLANILHA)
@@ -213,7 +227,7 @@ class RelatorioFalhas:
             return
         import gspread
 
-        gc = gspread.service_account_from_dict(json.loads(sa_json))
+        gc = _cliente_sheets(sa_json)
         planilha = gc.open_by_key(sheet_id)
         try:
             aba = planilha.worksheet(ABA_SNAPSHOT)
