@@ -185,6 +185,16 @@ def _executar_sync():
             # TPL não devolveu nada: não sobrescreve o snapshot (o alerta acusa sync parado)
             rel.registrar("ERRO_TPL", "-", detalhe="TPL retornou lista vazia de SKUs")
 
+        # Prioridade: proteger rupturas antes de percorrer SKUs no Omie.
+        # Opt-in: desativado por padrao; nunca envia saldo positivo para VNDA.
+        from utils.StockGuardVNDA import proteger_rupturas
+        try:
+            resumo_guard = proteger_rupturas(skus)
+            log.info("[STOCK GUARD] %s", resumo_guard)
+        except Exception as erro_guard:
+            log.error("[STOCK GUARD] erro geral: %s", erro_guard, exc_info=True)
+            # A falha do guard nao impede o fluxo TPL -> Omie.
+
         total = len(skus)
         _progresso_atual.update({
             "fase": "sincronizando_omie",
