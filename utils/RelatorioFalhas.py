@@ -60,6 +60,11 @@ def _cliente_sheets(sa_json: str):
     return gc
 
 # Foto do estoque a cada execução — lida pelo alerta do Slack (Apps Script)
+# Resultado da última tentativa REAL de atualizar cada SKU no Omie.
+# Snapshot: ausência de um SKU NÃO implica sucesso.
+ABA_RESULTADOS = "Status_Sync"
+COLUNAS_RESULTADOS = ["sku", "status", "atualizado_em", "saldo_tpl", "origem"]
+
 ABA_SNAPSHOT = "Estoque_Sync"
 COLUNAS_SNAPSHOT = [
     "sku", "descricao", "saldo_tpl", "saldo_omie_antes",
@@ -73,6 +78,7 @@ class RelatorioFalhas:
         self.inicio = datetime.now(TZ)
         self.itens: list[dict] = []
         self.saldos: list[dict] = []
+        self.resultados: list[dict] = []
         self.total_ok = 0
 
     # ------------------------------------------------------------------ coleta
@@ -91,6 +97,22 @@ class RelatorioFalhas:
 
     def ok(self) -> None:
         self.total_ok += 1
+
+    def registrar_resultado(self, sku: str, status: str, saldo_tpl=None) -> None:
+        """Resultado por SKU, baseado no retorno da chamada de ajuste do Omie.
+
+        OK = função de ajuste confirmou sucesso.
+        SEM_DEPARA/ERRO_OMIE = falha. Nunca usar saldo lido como sucesso.
+        """
+        status = str(status).upper().strip()
+        if status not in ("OK", "SEM_DEPARA", "ERRO_OMIE"):
+            raise ValueError(f"status de sincronização inválido: {status}")
+        self.resultados.append({
+            "sku": str(sku), "status": status,
+            "atualizado_em": datetime.now(TZ).isoformat(timespec="seconds"),
+            "saldo_tpl": "" if saldo_tpl is None else saldo_tpl,
+            "origem": self.origem,
+        })
 
     def registrar_saldo(self, sku: str, saldo_tpl, saldo_omie_antes=None,
                         saldo_enviado=None, descricao: str = "") -> None:
@@ -238,6 +260,47 @@ class RelatorioFalhas:
         aba.update(range_name="A1", values=linhas, value_input_option="RAW")
         print(f"[relatorio] snapshot com {len(self.saldos)} SKUs gravado em {ABA_SNAPSHOT}")
 
+    def gravar_resultados(self) -> None:
+        """Último resultado por SKU da execução corrente.
+
+        Não fecha incidentes por silêncio: o monitor só considera OK
+        posterior à última falha. Não grava snapshot vazio.
+        """
+        sa_json = os.getenv("GOOGLE_SA_JSON")
+        sheet_id = os.getenv("SHEET_FALHAS_ID")
+        if not sa_json or not sheet_id or not self.resultados:
+            return
+        import gspread
+        gc = _cliente_sheets(sa_json)
+        planilha = gc.open_by_key(sheet_id)
+        try:
+            aba = planilha.worksheet(ABA_RESULTADOS)
+        except gspread.WorksheetNotFound:
+            aba = planilha.add_worksheet(ABA_RESULTADOS, rows=1000, cols=len(COLUNAS_RESULTADOS))
+        # Mantém o último resultado dos SKUs que não foram processados nesta rodada.
+        # Se o sync terminar pela metade, os sucessos anteriores não desaparecem.
+        por_sku = {}
+        try:
+            for antigo in aba.get_all_records(numericise_ignore=["all"]):
+                chave = str(antigo.get("sku", "")).strip()
+                if chave:
+                    por_sku[chave] = {c: antigo.get(c, "") for c in COLUNAS_RESULTADOS}
+        except Exception as erro_leitura:
+            # Não sobreescrever o histórico diante de uma falha transitória de leitura.
+            raise RuntimeError(f"Não foi possível preservar o Status_Sync: {erro_leitura}") from erro_leitura
+        for novo in self.resultados:
+            chave = str(novo["sku"]).strip()
+            velho = por_sku.get(chave)
+            if not velho or str(novo["atualizado_em"]) >= str(velho.get("atualizado_em", "")):
+                por_sku[chave] = novo
+        linhas = [COLUNAS_RESULTADOS] + [
+            [item.get(c, "") for c in COLUNAS_RESULTADOS]
+            for item in por_sku.values()
+        ]
+        aba.clear()
+        aba.update(range_name="A1", values=linhas, value_input_option="RAW")
+        print(f"[relatorio] Status_Sync atualizado: {len(self.resultados)} desta rodada, {len(por_sku)} históricos")
+
     def exportar(self) -> dict:
         """Roda todas as saídas. Nunca levanta exceção — relatório não pode derrubar o sync."""
         status = {}
@@ -245,7 +308,8 @@ class RelatorioFalhas:
                          ("actions", self.escrever_resumo_actions),
                          ("slack", self.enviar_slack),
                          ("planilha", self.gravar_planilha),
-                         ("snapshot", self.gravar_snapshot)]:
+                         ("snapshot", self.gravar_snapshot),
+                         ("status_sync", self.gravar_resultados)]:
             try:
                 fn()
                 status[nome] = "ok"
