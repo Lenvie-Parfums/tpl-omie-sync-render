@@ -314,6 +314,16 @@ def _executar_sync():
                     exc_info=True,
                 )
 
+            # Resultado REAL da tentativa por SKU (independente de saldo na foto).
+            # Não marca sucesso quando a consulta ou a atualização falhar.
+            try:
+                resultado_sync = ("OK" if status == "ok" else
+                                  "SEM_DEPARA" if status == "nao_encontrado" else
+                                  "ERRO_OMIE")
+                rel.registrar_resultado(sku, resultado_sync, saldo_tpl=saldo_num)
+            except Exception as erro_resultado:
+                log.warning(f"SKU={sku} | falha ao registrar resultado: {erro_resultado}")
+
             # Mantém o delay atual entre produtos.
             if DELAY_ENTRE_SKUS > 0 and indice < total:
                 time.sleep(DELAY_ENTRE_SKUS)
